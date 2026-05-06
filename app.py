@@ -9,6 +9,7 @@ from requests_negotiate_sspi import HttpNegotiateAuth
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from io import BytesIO
@@ -143,6 +144,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 SAP_BASE_URL = os.getenv("SAP_GENERAL_API_BASE_URL", "http://nts5102/SapGeneralApi")
 
@@ -203,11 +211,14 @@ def process_ampl_results(items: List[Dict[str, Any]]) -> Dict[str, Any]:
             active_map[mpn]["count"] += 1
 
     active_list = sorted(active_map.values(), key=lambda x: x["count"], reverse=True)
+    mpns_only = [x["MfgPartNumber"] for x in active_list if x["MfgPartNumber"]]
 
     return {
         "total_active": sum(x["count"] for x in active_list),
         "total_blocked": len(blocked),
         "total_deleted": len(deleted),
+        "mpns_csv": ",".join(mpns_only),
+        "mpns_list": mpns_only,
         "active": active_list,
         "blocked": blocked,
         "deleted": deleted
