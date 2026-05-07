@@ -23,6 +23,10 @@ export function PlantTable({ plants, bestPlant, onSelect, selectedKey, pinnedSit
             <th className="px-4 py-3 text-left">Best Supplier</th>
             <th className="px-4 py-3 text-right">Last PO Price (USD)</th>
             <th className="px-4 py-3 text-right">Standard Price (USD)</th>
+            <th className="px-4 py-3 text-right">Raw Last PO Price</th>
+            <th className="px-4 py-3 text-right">Raw Last PO Per</th>
+            <th className="px-4 py-3 text-right">Raw Std Price</th>
+            <th className="px-4 py-3 text-right">Raw Std Per</th>
             <th className="px-4 py-3 text-right">Quantity</th>
             <th className="px-4 py-3 text-left">MPN</th>
             <th className="px-4 py-3 text-left">Last PO Date</th>
@@ -80,6 +84,18 @@ export function PlantTable({ plants, bestPlant, onSelect, selectedKey, pinnedSit
                 </td>
                 <td className="px-4 py-3 text-right text-gray-600 font-mono">
                   {fmt(bestRow.standardPriceUsd)}
+                </td>
+                <td className="px-4 py-3 text-right text-gray-500 font-mono text-xs">
+                  {bestRow.rawLastPoPrice != null ? bestRow.rawLastPoPrice.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 }) : '—'}
+                </td>
+                <td className="px-4 py-3 text-right text-gray-500 font-mono text-xs">
+                  {bestRow.rawLastPoPer != null ? bestRow.rawLastPoPer : '—'}
+                </td>
+                <td className="px-4 py-3 text-right text-gray-500 font-mono text-xs">
+                  {bestRow.rawStandardPrice.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })}
+                </td>
+                <td className="px-4 py-3 text-right text-gray-500 font-mono text-xs">
+                  {bestRow.rawStandardPricePer}
                 </td>
                 <td className="px-4 py-3 text-right text-gray-600">
                   {bestRow.quantity.toLocaleString()}
