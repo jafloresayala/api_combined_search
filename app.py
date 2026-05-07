@@ -1,4 +1,6 @@
 import os
+import re
+import time
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
@@ -43,6 +45,11 @@ class AmplRequest(BaseModel):
         description="Número de componente interno (BMATN)",
         examples=["EC03018"]
     )
+
+
+class NexarRequest(BaseModel):
+    mpns: List[str] = Field(..., description="Lista de MPNs a consultar")
+    quantity: int = Field(..., description="Cantidad deseada de piezas", ge=1)
 
 
 class EMSMaterialClient:
@@ -154,6 +161,42 @@ app.add_middleware(
 
 SAP_BASE_URL = os.getenv("SAP_GENERAL_API_BASE_URL", "http://nts5102/SapGeneralApi")
 
+NEXAR_GRAPHQL_URL = "https://api.nexar.com/graphql/"
+NEXAR_TOKEN_URL = "https://identity.nexar.com/connect/token"
+NEXAR_CLIENT_ID = os.getenv("NEXAR_CLIENT_ID", "")
+NEXAR_CLIENT_SECRET = os.getenv("NEXAR_CLIENT_SECRET", "")
+NEXAR_TOKEN_STATIC = os.getenv("NEXAR_TOKEN", "")  # Token directo, igual que las cookies EMS
+_nexar_token_cache: Dict[str, Any] = {"token": None, "expires_at": 0.0}
+# Caché para token obtenido automáticamente desde EMS api/NexarToken
+_ems_nexar_token_cache: Dict[str, Any] = {"token": None, "expires_at": 0.0}
+
+_NEXAR_QUERY = """
+query MultiMatchSearch($queries: [SupPartMatchQuery!]!) {
+  supMultiMatch(queries: $queries, currency: \"USD\") {
+    hits
+    parts {
+      manufacturer { name }
+      mpn
+      shortDescription
+      sellers(authorizedOnly: true) {
+        company { name }
+        offers {
+          clickUrl
+          inventoryLevel
+          moq
+          packaging
+          prices {
+            convertedCurrency
+            convertedPrice
+            quantity
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 
 def fetch_ampl_from_sap(bmatn: str) -> List[Dict[str, Any]]:
     url = f"{SAP_BASE_URL}/api/Ampl/FetchAmplByMaterials"
@@ -253,6 +296,124 @@ def health():
         "status": "ok",
         "ssl_verification": EMS_VERIFY_SSL
     }
+
+
+@app.get("/debug-nexar-extract")
+def debug_nexar_extract():
+    """
+    Diagnóstico: muestra qué encuentra el servidor al intentar extraer credenciales Nexar de EMS.
+    Soporta Blazor WebAssembly (DLLs .NET) y busca también en appsettings.json.
+    """
+    result: Dict[str, Any] = {
+        "architecture": "Blazor WebAssembly",
+        "page_status": None,
+        "appsettings_checked": [],
+        "boot_json_status": None,
+        "assemblies_found": 0,
+        "nexar_dlls": [],
+        "credential_search_results": [],
+        "extracted_client_id": None,
+        "error": None,
+    }
+
+    try:
+        client = get_client()
+    except HTTPException as e:
+        result["error"] = str(e.detail)
+        return result
+
+    base_app_url = "https://www.ems.keint.com/materials/comp-search"
+    framework_url = f"{base_app_url}/_framework"
+
+    # Verificar que la página carga
+    try:
+        page_r = client.session.get(f"{base_app_url}/", verify=EMS_VERIFY_SSL, timeout=15)
+        result["page_status"] = page_r.status_code
+    except requests.exceptions.RequestException as e:
+        result["error"] = f"Error al acceder a la página: {e}"
+        return result
+
+    # Estrategia 1: appsettings.json
+    for name in ("appsettings.json", "appsettings.Production.json"):
+        url = f"{base_app_url}/{name}"
+        info: Dict[str, Any] = {"url": url, "status": None, "contains_nexar": False, "match": None}
+        try:
+            r = client.session.get(url, verify=EMS_VERIFY_SSL, timeout=10)
+            info["status"] = r.status_code
+            if r.status_code == 200:
+                info["contains_nexar"] = "nexar" in r.text.lower()
+                info["preview"] = r.text[:500]
+                if info["contains_nexar"]:
+                    cid, csec = _search_text_for_nexar_creds(r.text)
+                    if cid:
+                        info["match"] = {"client_id": cid, "client_secret": "***"}
+                        result["extracted_client_id"] = cid
+        except requests.exceptions.RequestException as e:
+            info["error"] = str(e)
+        result["appsettings_checked"].append(info)
+
+    # Estrategia 2: blazor.boot.json → DLLs
+    try:
+        boot_r = client.session.get(f"{framework_url}/blazor.boot.json", verify=EMS_VERIFY_SSL, timeout=15)
+        result["boot_json_status"] = boot_r.status_code
+        if boot_r.status_code != 200:
+            result["error"] = "blazor.boot.json no devolvió 200"
+            return result
+        boot_data = boot_r.json()
+    except Exception as e:
+        result["error"] = f"Error leyendo blazor.boot.json: {e}"
+        return result
+
+    resources = boot_data.get("resources", {})
+    assemblies: Dict[str, Any] = {}
+    assemblies.update(resources.get("assembly", {}))
+    assemblies.update(resources.get("lazyAssembly", {}))
+    result["assemblies_found"] = len(assemblies)
+    result["all_dll_names"] = list(assemblies.keys())
+
+    SKIP_PREFIXES = ("microsoft.", "system.", "mudblazor", "blazor", "netstandard",
+                     "mscorlib", "mono.", "mono_", "runtime.", "nuget.")
+    app_dlls = [n for n in assemblies if not any(n.lower().startswith(p) for p in SKIP_PREFIXES)]
+    result["app_dlls"] = app_dlls
+
+    for dll_name in app_dlls:
+        dll_info: Dict[str, Any] = {"name": dll_name, "status": None, "size_kb": None,
+                                     "contains_nexar": False, "match_utf8": None, "match_utf16": None}
+        try:
+            dll_r = client.session.get(f"{framework_url}/{dll_name}", verify=EMS_VERIFY_SSL, timeout=20)
+            dll_info["status"] = dll_r.status_code
+            if dll_r.status_code != 200:
+                continue
+            content = dll_r.content
+            dll_info["size_kb"] = round(len(content) / 1024, 1)
+            dll_info["contains_nexar"] = b"nexar" in content.lower()
+            if dll_info["contains_nexar"]:
+                result["nexar_dlls"].append(dll_name)
+                # UTF-8
+                text8 = content.decode("utf-8", errors="ignore")
+                cid, csec = _search_text_for_nexar_creds(text8)
+                if cid:
+                    dll_info["match_utf8"] = {"client_id": cid, "client_secret": "***"}
+                    result["extracted_client_id"] = cid
+                # UTF-16LE
+                text16 = content.decode("utf-16-le", errors="ignore")
+                cid16, csec16 = _search_text_for_nexar_creds(text16)
+                if cid16:
+                    dll_info["match_utf16"] = {"client_id": cid16, "client_secret": "***"}
+                    result["extracted_client_id"] = cid16
+                # Contexto alrededor de "nexar" en UTF-8 para inspección manual
+                snippets = []
+                for m in re.finditer(r'.{0,120}nexar.{0,120}', text8, re.IGNORECASE):
+                    snippets.append(m.group(0))
+                    if len(snippets) >= 8:
+                        break
+                dll_info["nexar_context_utf8"] = snippets
+        except requests.exceptions.RequestException as e:
+            dll_info["error"] = str(e)
+        if dll_info["contains_nexar"] or dll_info.get("error"):
+            result["credential_search_results"].append(dll_info)
+
+    return result
 
 
 @app.post("/internal-query")
@@ -379,3 +540,229 @@ def ampl_by_material_excel(request: AmplRequest):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Nexar market prices
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _fetch_oauth_token_with(client_id: str, client_secret: str, cache: Dict[str, Any]) -> str:
+    """Obtiene un token OAuth usando las credenciales dadas y lo guarda en el cache indicado."""
+    resp = requests.post(
+        NEXAR_TOKEN_URL,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    cache["token"] = data["access_token"]
+    cache["expires_at"] = time.time() + data.get("expires_in", 3600)
+    return cache["token"]
+
+
+def _search_text_for_nexar_creds(text: str) -> tuple:
+    """Busca clientId/clientSecret de Nexar en texto (JSON, UTF-8 o UTF-16 decodificado)."""
+    uuid_pat = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    secret_pat = r'[A-Za-z0-9_\-\.~]{16,}'
+    patterns = [
+        (rf'"clientId"\s*:\s*"({uuid_pat})".*?"clientSecret"\s*:\s*"({secret_pat})"', 1, 2),
+        (rf'"clientSecret"\s*:\s*"({secret_pat})".*?"clientId"\s*:\s*"({uuid_pat})"', 2, 1),
+        (rf'clientId\s*[:=]\s*["`]({uuid_pat})["`].{{0,400}}?clientSecret\s*[:=]\s*["`]({secret_pat})["`]', 1, 2),
+        (rf'clientSecret\s*[:=]\s*["`]({secret_pat})["`].{{0,400}}?clientId\s*[:=]\s*["`]({uuid_pat})["`]', 2, 1),
+    ]
+    for pattern, cid_group, csec_group in patterns:
+        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if m:
+            return m.group(cid_group), m.group(csec_group)
+    return None, None
+
+
+EMS_NEXAR_TOKEN_URL = "https://www.ems.keint.com/materials/comp-search/api/NexarToken"
+
+
+def _fetch_nexar_token_from_ems() -> str:
+    """
+    Obtiene un token Nexar directamente del endpoint de EMS (api/NexarToken).
+    Usa las cookies de EMS ya configuradas — sin configuración adicional.
+    El token se cachea en _ems_nexar_token_cache con su expiración real.
+    """
+    try:
+        client = get_client()
+    except HTTPException:
+        raise HTTPException(
+            status_code=500,
+            detail="Cookies de EMS no configuradas. Son necesarias para obtener el token Nexar automáticamente."
+        )
+    try:
+        resp = client.session.get(EMS_NEXAR_TOKEN_URL, verify=EMS_VERIFY_SSL, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Error obteniendo token Nexar desde EMS: {e}")
+    except ValueError:
+        raise HTTPException(status_code=502, detail="EMS devolvió una respuesta inválida en api/NexarToken")
+
+    token = data.get("access_token") or data.get("token") or data.get("accessToken")
+    if not token:
+        raise HTTPException(
+            status_code=502,
+            detail=f"EMS api/NexarToken no devolvió access_token. Respuesta: {str(data)[:300]}"
+        )
+    expires_in = data.get("expires_in", 3600)
+    _ems_nexar_token_cache["token"] = token
+    _ems_nexar_token_cache["expires_at"] = time.time() + expires_in
+    return token
+
+
+def get_nexar_token() -> str:
+    # Modo 1: token directo en .env
+    if NEXAR_TOKEN_STATIC:
+        return NEXAR_TOKEN_STATIC
+
+    # Modo 2: OAuth con credenciales propias configuradas en .env
+    if NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET:
+        if _nexar_token_cache["token"] and time.time() < _nexar_token_cache["expires_at"] - 60:
+            return _nexar_token_cache["token"]
+        try:
+            return _fetch_oauth_token_with(NEXAR_CLIENT_ID, NEXAR_CLIENT_SECRET, _nexar_token_cache)
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=502, detail=f"Error obteniendo token Nexar: {str(e)}")
+
+    # Modo 3 (automático): llama al endpoint api/NexarToken de EMS con las cookies ya configuradas
+    if _ems_nexar_token_cache["token"] and time.time() < _ems_nexar_token_cache["expires_at"] - 60:
+        return _ems_nexar_token_cache["token"]
+    return _fetch_nexar_token_from_ems()
+
+
+def _unit_price_for_qty(prices: List[Dict], qty: int) -> Optional[float]:
+    """Precio unitario USD para la cantidad solicitada usando el tier más alto <= qty."""
+    if not prices:
+        return None
+    sorted_p = sorted(prices, key=lambda p: p.get("quantity", 0))
+    applicable = [p for p in sorted_p if p.get("quantity", 0) <= qty]
+    source = applicable[-1] if applicable else sorted_p[0]
+    return source.get("convertedPrice")
+
+
+def _call_nexar(token: str, queries: list) -> dict:
+    resp = requests.post(
+        NEXAR_GRAPHQL_URL,
+        json={
+            "query": _NEXAR_QUERY,
+            "variables": {"queries": queries},
+            "operationName": "MultiMatchSearch",
+        },
+        headers={"Content-Type": "application/json", "token": token},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+@app.post("/market-prices")
+def market_prices(request: NexarRequest):
+    """
+    Consulta Nexar (api.nexar.com) para obtener precios de mercado de los MPNs dados.
+    Devuelve los proveedores ordenados por precio unitario para la cantidad solicitada.
+    """
+    if not request.mpns:
+        raise HTTPException(status_code=400, detail="Lista de MPNs vacía.")
+
+    token = get_nexar_token()
+    queries = [{"mpn": mpn, "start": 0, "limit": 50} for mpn in request.mpns[:50]]
+
+    try:
+        data = _call_nexar(token, queries)
+    except requests.exceptions.HTTPError as e:
+        # Si devuelve 401 y usamos OAuth, invalida caché y reintenta una vez
+        if e.response is not None and e.response.status_code == 401 and not NEXAR_TOKEN_STATIC:
+            # Invalida caché correspondiente y reintenta
+            if NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET:
+                _nexar_token_cache["token"] = None
+                _nexar_token_cache["expires_at"] = 0.0
+            else:
+                _ems_nexar_token_cache["token"] = None
+                _ems_nexar_token_cache["expires_at"] = 0.0
+            try:
+                token = get_nexar_token()
+                data = _call_nexar(token, queries)
+            except requests.exceptions.RequestException as e2:
+                raise HTTPException(status_code=502, detail=f"Error consultando Nexar: {str(e2)}")
+        else:
+            raise HTTPException(status_code=502, detail=f"Error consultando Nexar: {str(e)}")
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Timeout consultando Nexar.")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Error consultando Nexar: {str(e)}")
+
+    matches = (data.get("data") or {}).get("supMultiMatch", [])
+    offers: List[Dict[str, Any]] = []
+
+    for match in matches:
+        for part in (match.get("parts") or []):
+            mpn = part.get("mpn", "")
+            manufacturer = (part.get("manufacturer") or {}).get("name", "")
+            description = part.get("shortDescription", "")
+
+            for seller in (part.get("sellers") or []):
+                seller_name = (seller.get("company") or {}).get("name", "")
+
+                for offer in (seller.get("offers") or []):
+                    prices = offer.get("prices") or []
+                    inventory = offer.get("inventoryLevel", 0)
+                    moq = offer.get("moq") or 1
+                    click_url = offer.get("clickUrl", "")
+                    packaging = offer.get("packaging") or ""
+
+                    if not prices:
+                        continue
+
+                    unit_price = _unit_price_for_qty(prices, request.quantity)
+                    if unit_price is None:
+                        continue
+
+                    offers.append({
+                        "mpn": mpn,
+                        "manufacturer": manufacturer,
+                        "description": description,
+                        "seller": seller_name,
+                        "unit_price_usd": round(unit_price, 6),
+                        "total_price_usd": round(unit_price * request.quantity, 2),
+                        "inventory": inventory,
+                        "moq": moq,
+                        "can_fulfill": request.quantity >= moq,
+                        "packaging": packaging,
+                        "click_url": click_url,
+                    })
+
+    in_stock = sorted(
+        [o for o in offers if o["can_fulfill"] and o["inventory"] > 0],
+        key=lambda x: x["unit_price_usd"]
+    )
+    fulfillable_no_stock = sorted(
+        [o for o in offers if o["can_fulfill"] and o["inventory"] == 0],
+        key=lambda x: x["unit_price_usd"]
+    )
+    non_fulfillable = sorted(
+        [o for o in offers if not o["can_fulfill"]],
+        key=lambda x: x["unit_price_usd"]
+    )
+    sorted_offers = in_stock + fulfillable_no_stock + non_fulfillable
+
+    best_offer = (
+        in_stock[0] if in_stock
+        else fulfillable_no_stock[0] if fulfillable_no_stock
+        else sorted_offers[0] if sorted_offers
+        else None
+    )
+
+    return {
+        "quantity": request.quantity,
+        "total_offers": len(sorted_offers),
+        "best_offer": best_offer,
+        "offers": sorted_offers,
+    }

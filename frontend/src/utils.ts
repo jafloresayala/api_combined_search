@@ -26,7 +26,37 @@ export function resolveLastPoPrice(row: InternalQueryItem): number | null {
   return null
 }
 
+/** Precio estándar en moneda local. Fallback: rawStandardPrice / rawStandardPricePer */
+export function resolveStandardPriceLocal(row: InternalQueryItem): number | null {
+  if (row.standardPriceLocalCurr != null) return row.standardPriceLocalCurr
+  if (row.rawStandardPrice != null && row.rawStandardPricePer)
+    return row.rawStandardPrice / row.rawStandardPricePer
+  return null
+}
+
+/** Precio último PO en moneda local. Fallback: rawLastPoPrice / rawLastPoPer */
+export function resolveLastPoPriceLocal(row: InternalQueryItem): number | null {
+  if (row.lastPoPriceLocalCurr != null) return row.lastPoPriceLocalCurr
+  if (row.rawLastPoPrice != null && row.rawLastPoPer)
+    return row.rawLastPoPrice / row.rawLastPoPer
+  return null
+}
+
 export const fmt = (v: number | null | undefined) =>
   v == null
     ? '—'
     : v.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 6 })
+
+/** Formatea un número en moneda local con su código de divisa */
+export function fmtLocal(v: number | null | undefined, currency: string): string {
+  if (v == null) return '—'
+  try {
+    return v.toLocaleString('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 4,
+    })
+  } catch {
+    return `${currency} ${v.toFixed(4)}`
+  }
+}

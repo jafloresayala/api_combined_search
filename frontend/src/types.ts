@@ -65,3 +65,24 @@ export interface PlantSummary {
   mpn: string;
   rows: InternalQueryItem[];
 }
+
+export interface MarketOffer {
+  mpn: string;
+  manufacturer: string;
+  description: string;
+  seller: string;
+  unit_price_usd: number;
+  total_price_usd: number;
+  inventory: number;
+  moq: number;
+  can_fulfill: boolean;
+  packaging: string;
+  click_url: string;
+}
+
+export interface MarketPricesResponse {
+  quantity: number;
+  total_offers: number;
+  best_offer: MarketOffer | null;
+  offers: MarketOffer[];
+}

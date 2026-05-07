@@ -1,4 +1,4 @@
-import type { AmplResponse, InternalQueryResponse } from './types';
+import type { AmplResponse, InternalQueryResponse, MarketPricesResponse } from './types';
 
 const BASE = '/api';
 
@@ -24,6 +24,19 @@ export async function fetchInternalQuery(mpns: string[]): Promise<InternalQueryR
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? 'Error consultando InternalQuery');
+  }
+  return res.json();
+}
+
+export async function fetchMarketPrices(mpns: string[], quantity: number): Promise<MarketPricesResponse> {
+  const res = await fetch(`${BASE}/market-prices`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mpns, quantity }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? 'Error consultando Nexar');
   }
   return res.json();
 }

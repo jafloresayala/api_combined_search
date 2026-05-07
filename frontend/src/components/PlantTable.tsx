@@ -4,40 +4,76 @@ import { resolveLastPoPrice, fmt } from '../utils';
 interface Props {
   plants: PlantSummary[];
   bestPlant: string;
+  onSelect?: (label: string, unitPrice: number, key: string, moqWarning?: boolean) => void;
+  selectedKey?: string;
+  pinnedSite?: string;
+  onPin?: (plant: PlantSummary) => void;
 }
 
-export function PlantTable({ plants, bestPlant }: Props) {
+export function PlantTable({ plants, bestPlant, onSelect, selectedKey, pinnedSite, onPin }: Props) {
   return (
     <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
       <table className="min-w-full text-sm">
         <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
           <tr>
-            <th className="px-4 py-3 text-left">Planta</th>
-            <th className="px-4 py-3 text-left">Mejor Proveedor</th>
-            <th className="px-4 py-3 text-right">Último PO Price (USD)</th>
-            <th className="px-4 py-3 text-right">Precio Estándar (USD)</th>
-            <th className="px-4 py-3 text-right">Cantidad</th>
+            <th className="px-3 py-3 w-8" />
+            <th className="px-4 py-3 text-left">Plant</th>
+            <th className="px-4 py-3 text-left">Internal P/N</th>
+            <th className="px-4 py-3 text-left">Manufacturer</th>
+            <th className="px-4 py-3 text-left">Best Supplier</th>
+            <th className="px-4 py-3 text-right">Last PO Price (USD)</th>
+            <th className="px-4 py-3 text-right">Standard Price (USD)</th>
+            <th className="px-4 py-3 text-right">Quantity</th>
             <th className="px-4 py-3 text-left">MPN</th>
-            <th className="px-4 py-3 text-left">Fecha Último PO</th>
+            <th className="px-4 py-3 text-left">Last PO Date</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
           {plants.map((p) => {
             const isBest = p.siteName === bestPlant;
-            const bestRow = p.rows.reduce((a, b) =>
-              (resolveLastPoPrice(a) ?? Infinity) <= (resolveLastPoPrice(b) ?? Infinity) ? a : b
-            );
+            const isPinned = p.siteName === pinnedSite;
+            const isSelected = selectedKey === `plant:${p.siteName}`;
             return (
               <tr
                 key={p.siteName}
-                className={isBest ? 'bg-green-50 font-semibold' : 'hover:bg-gray-50'}
+                onClick={() => p.bestPrice != null && onSelect?.(`${p.siteName} · ${p.bestSupplier}`, p.bestPrice, `plant:${p.siteName}`)}
+                className={[
+                  onSelect && p.bestPrice != null ? 'cursor-pointer' : '',
+                  isBest ? 'font-semibold' : '',
+                  isSelected
+                    ? 'bg-blue-100 ring-2 ring-inset ring-blue-400'
+                    : isPinned
+                    ? 'bg-indigo-50 ring-2 ring-inset ring-indigo-400'
+                    : isBest ? 'bg-green-50' : 'hover:bg-gray-50',
+                ].join(' ')}
               >
+                <td className="px-3 py-3 text-center">
+                  <button
+                    onClick={e => { e.stopPropagation(); onPin?.(p); }}
+                    title={isPinned ? 'Remove reference' : 'Pin as comparison reference'}
+                    className={`text-base leading-none transition-opacity ${
+                      isPinned ? 'opacity-100' : 'opacity-20 hover:opacity-70'
+                    }`}
+                  >
+                    📌
+                  </button>
+                </td>
                 <td className="px-4 py-3 flex items-center gap-2">
                   {isBest && (
                     <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
                   )}
+                  {isPinned && (
+                    <span className="inline-block w-2 h-2 rounded-full bg-indigo-500" />
+                  )}
                   <span>{p.siteName}</span>
                 </td>
+                {(() => {
+                  const bestRow = p.rows.reduce((a, b) =>
+                    (resolveLastPoPrice(a) ?? Infinity) <= (resolveLastPoPrice(b) ?? Infinity) ? a : b
+                  );
+                  return (<>
+                <td className="px-4 py-3 font-mono text-xs text-gray-700">{bestRow.internalPN}</td>
+                <td className="px-4 py-3 text-gray-700">{bestRow.manufacturerName}</td>
                 <td className="px-4 py-3 text-gray-700">{p.bestSupplier}</td>
                 <td className="px-4 py-3 text-right text-blue-700 font-mono">
                   {fmt(p.bestPrice)}
@@ -50,6 +86,8 @@ export function PlantTable({ plants, bestPlant }: Props) {
                 </td>
                 <td className="px-4 py-3 text-gray-600 font-mono text-xs">{p.mpn}</td>
                 <td className="px-4 py-3 text-gray-500">{p.lastPoDate}</td>
+                  </>);
+                })()}
               </tr>
             );
           })}

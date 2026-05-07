@@ -8,3 +8,7 @@ openpyxl==3.1.5
 python-dotenv==1.2.2
 pydantic==2.13.4
 urllib3==2.6.3
+browser-cookie3>=0.19.0
+pywin32>=306
+pycryptodome>=3.20.0
+playwright>=1.44.0
