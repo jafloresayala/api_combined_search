@@ -37,6 +37,11 @@ export function PlantTable({ plants, bestPlant, onSelect, selectedKey, pinnedSit
             const isBest = p.siteName === bestPlant;
             const isPinned = p.siteName === pinnedSite;
             const isSelected = selectedKey === `plant:${p.siteName}`;
+            const bestRow = p.rows.reduce((a, b) =>
+              (resolveLastPoPrice(a) ?? Infinity) <= (resolveLastPoPrice(b) ?? Infinity) ? a : b
+            );
+            const lastPo = resolveLastPoPrice(bestRow);
+            const stdUnderLastPo = lastPo != null && bestRow.standardPriceUsd < lastPo;
             return (
               <tr
                 key={p.siteName}
@@ -48,6 +53,8 @@ export function PlantTable({ plants, bestPlant, onSelect, selectedKey, pinnedSit
                     ? 'bg-blue-100 ring-2 ring-inset ring-blue-400'
                     : isPinned
                     ? 'bg-indigo-50 ring-2 ring-inset ring-indigo-400'
+                    : stdUnderLastPo
+                    ? 'bg-red-50 ring-2 ring-inset ring-red-400'
                     : isBest ? 'bg-green-50' : 'hover:bg-gray-50',
                 ].join(' ')}
               >
@@ -72,9 +79,6 @@ export function PlantTable({ plants, bestPlant, onSelect, selectedKey, pinnedSit
                   <span>{p.siteName}</span>
                 </td>
                 {(() => {
-                  const bestRow = p.rows.reduce((a, b) =>
-                    (resolveLastPoPrice(a) ?? Infinity) <= (resolveLastPoPrice(b) ?? Infinity) ? a : b
-                  );
                   return (<>
                 <td className="px-4 py-3 font-mono text-xs text-gray-700">{bestRow.internalPN}</td>
                 <td className="px-4 py-3 text-gray-700">{bestRow.manufacturerName}</td>
