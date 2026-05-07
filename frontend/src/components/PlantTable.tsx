@@ -23,10 +23,10 @@ export function PlantTable({ plants, bestPlant, onSelect, selectedKey, pinnedSit
             <th className="px-4 py-3 text-left">Best Supplier</th>
             <th className="px-4 py-3 text-right">Last PO Price (USD)</th>
             <th className="px-4 py-3 text-right">Standard Price (USD)</th>
-            <th className="px-4 py-3 text-right">Raw Last PO Price</th>
-            <th className="px-4 py-3 text-right">Raw Last PO Per</th>
-            <th className="px-4 py-3 text-right">Raw Std Price</th>
-            <th className="px-4 py-3 text-right">Raw Std Per</th>
+            <th className="px-4 py-3 text-right">Last PO Price</th>
+            <th className="px-4 py-3 text-right">Last PO Per</th>
+            <th className="px-4 py-3 text-right">Std Price</th>
+            <th className="px-4 py-3 text-right">Std Per</th>
             <th className="px-4 py-3 text-right">Quantity</th>
             <th className="px-4 py-3 text-left">MPN</th>
             <th className="px-4 py-3 text-left">Last PO Date</th>
